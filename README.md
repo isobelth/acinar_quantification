@@ -1,6 +1,7 @@
 # Acinar Analysis & GUI
 
-![1789733532869](https://file+.vscode-resource.vscode-cdn.net/c%3A/Users/taylorhearn/git_repos/image_quantification/WIP_Acinar_Code/image/README/1789733532869.png)
+![README_images/microscope_images.png](README_images/microscope_images.png)
+
 
 ## Overview
 
@@ -30,19 +31,34 @@ More niche workflows are also available
 
 Launch the GUI using GUI_launcher.ipynb.
 
+## Creating Masks
+- Some analyses require pre-segmentation of nuclei/membrane..... This can be achieved with Cellpose/SAM, but we continue to recommend Labkit (FIJI plugin).
+
+Signal attenuation in deeper z-slices is a major challenge in 3D acinar imaging. The recommended workflow:
+
+1. Split z-stacks into top (bright) and bottom (dim) halves.
+2. Train separate [Labkit](https://imagej.net/plugins/labkit/) classifiers in FIJI/ImageJ for each half.
+3. Segment, then concatenate top + bottom masks into full-stack masks.
+4. Save masks in separate folders per channel (one mask TIFF per image TIFF, matched alphabetically).
+
+![README_images/labkit_segmentation.png](README_images/labkit_segmentation.png)
+
+
 ## Shared Step: Acinus Segmentation
 
 Every analysis begins by identifying the primary acinus in the image. The pipeline enables splitting of neighbouring acini and luminal filling. The pipeline:
 
-1. **Builds an acinus approximation** by summing the nuclear + membrane channels (plus any active stain channels like C3, EdU, mito).
-2. **Downscales** to 0.25× isotropic resolution for speed.
-3. **Clips intensity** to the 10th–85th percentile range, then applies Gaussian smoothing (σ = 3).
-4. **Thresholds** with Li's method, removes small holes/objects, keeps the largest connected component.
-5. **Per-slice hole filling** — each Z-slice is independently filled and only the largest component retained to avoid capturing neighbouring acini.
-6. **Sphericity check** — if the shape is too elongated (eigenvalue ratio < 0.55, suggesting merged acini), the pipeline re-segments with a triangle threshold + erosion to split them.
+1. **Builds an acinus approximation:** by summing the nuclear + membrane channels (plus any active stain channels like C3, EdU, mito).
+2. **Downscales:** default 0.25× isotropic resolution for more managable processing speed.
+3. **Clips and smooths**: rescale 10-85% range, then Gaussian smoothing.
+4. **Thresholds:** Uses Li's method and keeps the largest connected component.
+5. **Fills holes:** each Z-slice is filled to ensure that any hollow luminal region is captured as part of the acinus.
+6. **Sphericity check:** code attempts to split neighbouring acini (quantifying only the largest, centrally located one) while leaving genuinely non-spherical acini intact. This is achieved by checking for low sphericity items: if sphericity is low, splitting is attempted using erosion (and subsequent expansion so volume is not lost). If objects are only tangential, this should split them, whereas "true" non-spherical acini are maintained. 
 7. **Final erosion** (ball radius 5) offsets any expansion from smoothing/filling, then a final largest-component filter.
 
 The result is a binary 3D mask used by all downstream analyses.
+
+![README_images/acinus_shape_size.png](README_images/acinus_shape_size.png)
 
 ## Analysis Modules
 
@@ -55,7 +71,8 @@ The result is a binary 3D mask used by all downstream analyses.
 | **Required folders**  | Image folder only                                |
 | **Required channels** | None                                             |
 
-**How it works:** Uses the shared acinus segmentation, then computes volume from voxel count × voxel size³ and roundness as the ratio of the smallest to largest inertia tensor eigenvalue (1.0 = perfect sphere).
+**How it works:** Uses the shared acinus segmentation, then computes volume from voxel count × voxel size³ and roundness as the ratio of the smallest to largest [inertia tensor eigenvalue](https://pydocs.github.io/p/skimage/0.17.2/api/skimage.measure._moments.inertia_tensor_eigvals.html) (1.0 = perfect sphere).
+
 
 **Output columns:**
 
@@ -81,10 +98,13 @@ The result is a binary 3D mask used by all downstream analyses.
 **How it works:**
 
 1. Rescales nuclear and membrane binary masks to acinus resolution and restricts them to the acinus boundary.
-2. **Nuclei:** Otsu threshold → hole fill → distance-transform watershed (4 µm min separation, 2 µm min radius filter).
-3. **Cells:** Membrane mask is watershed-segmented using nuclear centroids as seeds, then expanded (12 px) within the acinus to fill gaps.
+2. **Nuclei:** Nuclei are identified and holes filled. A distance-transform watershed is used to split touching nuclei
+3. **Cells:** Membrane mask is watershed segmented using the nuclear centroids as seeds. Resulting labels are expanded within the acinus to fill gaps (due to wide membrane segmentation)
 4. Each nucleus is matched to its enclosing cell by centroid lookup.
 5. Cell–cell neighbour counts are computed via voxel adjacency along all three axes.
+
+![README_images/cell_nuclear_segmentation.png](README_images/cell_nuclear_segmentation.png)
+
 
 **Output columns:**
 
@@ -100,9 +120,13 @@ The result is a binary 3D mask used by all downstream analyses.
 
 **QC plot:** Mid-Z nuclear labels + cell labels colour-coded on the raw image.
 
+
 ---
 
 ### 3. Protein Polarisation
+![README_images/bm_phenotypes.png](README_images/bm_phenotypes.png)
+
+We used this to quantify the (mis-)localisation of proteins away from the acinus exterior, but it can be used for polarisation of any protein **relative to the acinus exterior**.
 
 |                             |                                                                                      |
 | --------------------------- | ------------------------------------------------------------------------------------ |
@@ -113,9 +137,11 @@ The result is a binary 3D mask used by all downstream analyses.
 
 **How it works:**
 
-1. Rescales the protein channel and masks it to a slightly expanded acinus region (5 px dilation).
-2. Computes a distance transform from the acinus boundary, normalised by the equivalent sphere radius of the acinus.
-3. Bins voxels by their normalised distance (rounded to 2 decimals) and averages the protein intensity per bin.
+1. Acinus mask is expanded (5px) to include protein on the acinar exterior. Protein of interest is masked within the acinus (so this code does not measure protein mislocalisation into the surrounding ECM, only internalisation).
+2. A distance transform from the acinus exterior is used to calculate the protein intensity at each (binned and rescaled) distance.
+
+![README_images/bm_quantification.png](README_images/bm_quantification.png)
+
 
 **Output columns:**
 
@@ -381,14 +407,7 @@ An `imaging_record.yml` file can be provided to control how experimental metadat
 
 ---
 
-## Background: Mask Preparation
 
-Signal attenuation in deeper z-slices is a major challenge in 3D acinar imaging. The recommended workflow:
-
-1. Split z-stacks into top (bright) and bottom (dim) halves.
-2. Train separate [Labkit](https://imagej.net/plugins/labkit/) classifiers in FIJI/ImageJ for each half.
-3. Segment, then concatenate top + bottom masks into full-stack masks.
-4. Save masks in separate folders per channel (one mask TIFF per image TIFF, matched alphabetically).
 
 ---
 

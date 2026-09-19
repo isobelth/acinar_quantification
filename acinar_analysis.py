@@ -68,13 +68,15 @@ from skimage.filters import gaussian, threshold_li, threshold_otsu, threshold_tr
 from skimage.measure import label, regionprops, regionprops_table
 from skimage.morphology import (
     ball,
+    closing,
     dilation,
+    disk,
     erosion,
     opening,
     remove_small_holes,
     remove_small_objects,
 )
-from skimage.segmentation import clear_border, expand_labels, watershed
+from skimage.segmentation import clear_border, expand_labels, find_boundaries, watershed
 from skimage.transform import rescale
 from tifffile import imread
 from tqdm import tqdm
@@ -248,6 +250,28 @@ def add_image_details(
 
     df["image_type"] = df["condition"].astype(str) + ", d" + df["day"].astype(str)
     return df
+
+
+def fill_holes_slicewise(binary: np.ndarray) -> np.ndarray:
+    """Fill enclosed holes on each z-slice in 2D.
+
+    3D hole filling only closes voxels fully enclosed in 3D, so a hole that
+    opens onto an adjacent slice stays unfilled. Filling each z-plane in 2D
+    catches these, giving more solid nuclei masks.
+    """
+    filled = binary.copy()
+    for z in range(filled.shape[0]):
+        filled[z] = ndi.binary_fill_holes(filled[z])
+    return filled
+
+
+def close_slicewise(binary: np.ndarray, radius: int = 2) -> np.ndarray:
+    """Morphologically close each z-slice in 2D to bridge fragmented objects."""
+    selem = disk(radius)
+    closed = binary.copy()
+    for z in range(closed.shape[0]):
+        closed[z] = closing(closed[z], selem)
+    return closed
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +461,69 @@ def _watershed_from_seeds(
     return seg, expanded
 
 
+def segment_nuclei(
+    nuclei_mask: np.ndarray,
+    new_pixel_size: float,
+    smooth_sigma: float = 1.0,
+    close_radius: int = 3,
+    separation_um: float = 5.0,
+    seed_erosion_radius: int = 4,
+    min_nucleus_radius_um: float = 2.0,
+) -> np.ndarray:
+    """Watershed-segment individual nuclei from a rescaled nuclear mask.
+
+    Cleans the mask (per-slice closing + hole filling + small-object removal),
+    then splits touching nuclei using distance-transform seeds.
+
+    Parameters
+    ----------
+    separation_um : float
+        Minimum distance (Âµm) between seed peaks; nuclei centres closer than
+        this are treated as one nucleus (``min_distance`` in ``peak_local_max``).
+    """
+    cleaned = gaussian(nuclei_mask, smooth_sigma)
+    cleaned = cleaned > threshold_otsu(cleaned)
+    # Close then fill per-slice to consolidate fragmented nuclei, then drop
+    # remaining small debris before watershed.
+    cleaned = close_slicewise(cleaned, radius=close_radius)
+    cleaned = fill_holes_slicewise(cleaned)
+    cleaned = remove_small_objects(
+        cleaned, min_size=int((4 / 3) * np.pi * (1.5 / new_pixel_size) ** 3)
+    )
+
+    distances = ndi.distance_transform_edt(erosion(cleaned, ball(seed_erosion_radius)))
+    coords = peak_local_max(
+        distances, min_distance=max(1, int(separation_um / new_pixel_size))
+    )
+    markers = np.zeros(cleaned.shape, dtype=np.uint32)
+    markers[tuple(np.round(coords).astype(int).T)] = np.arange(len(coords)) + 1
+    markers = dilation(markers, ball(2))
+    seg_nuc = watershed(-distances, markers, mask=cleaned)
+    seg_nuc = clear_border(seg_nuc)
+
+    props = regionprops_table(seg_nuc, properties=("label", "area"))
+    vol_thresh = (4 / 3) * np.pi * (min_nucleus_radius_um / new_pixel_size) ** 3
+    keep = props["area"] >= vol_thresh
+    seg_nuc = util.map_array(seg_nuc, props["label"], props["label"] * keep)
+    return seg_nuc
+
+
+def segment_cells(
+    membrane_mask: np.ndarray,
+    seed_labels: np.ndarray,
+    acinus_mask: np.ndarray,
+    smooth_sigma: float = 1.0,
+) -> np.ndarray:
+    """Segment cell territories from a membrane mask, seeded by nuclei.
+
+    Returns the expanded cell-label image restricted to the acinus.
+    """
+    cleaned = gaussian(membrane_mask, sigma=smooth_sigma)
+    cleaned = cleaned > threshold_otsu(cleaned)
+    _, expanded = _watershed_from_seeds(cleaned, seed_labels, acinus_mask)
+    return expanded
+
+
 # ---------------------------------------------------------------------------
 #  Neighbour analysis (cell/nuclear shape)
 # ---------------------------------------------------------------------------
@@ -593,6 +680,7 @@ class AcinarImage:
         self.proximity_protein_channel = proximity_protein_channel
         self.extra_acinus_channels = extra_acinus_channels
         self.qc_dir = None  # set externally or via batch_analyse
+        self.qc_format = "png"  # QC image format: png, pdf or svg
         self.return_volumes = False  # when True, populate self.volumes
         self.volumes: Dict[str, np.ndarray] = {}  # name -> 3D array
 
@@ -735,7 +823,7 @@ class AcinarImage:
                                "dodgerblue", "darkviolet", "deeppink"]
                 _label_cmap = ListedColormap(_qc_colours)
                 masked = np.ma.masked_where(overlay == 0, overlay)
-                ax.imshow(masked, cmap=_label_cmap, alpha=0.5, interpolation="nearest")
+                ax.imshow(masked, cmap=_label_cmap, alpha=0.3, interpolation="nearest")
             else:  # binary mask
                 ax.contour(overlay, levels=[0.5], colors="darkorange", linewidths=0.8)
             ax.set_title(name)
@@ -743,7 +831,8 @@ class AcinarImage:
 
         fig.suptitle(f"{stem} \u2014 {analysis_name} {title_extra}", fontsize=10)
         fig.tight_layout()
-        out = qc_path / f"{stem}_{analysis_name}_qc.png"
+        fmt = getattr(self, "qc_format", "png") or "png"
+        out = qc_path / f"{stem}_{analysis_name}_qc.{fmt}"
         fig.savefig(str(out), dpi=150, bbox_inches="tight")
 
     def _mid_z(self, vol: np.ndarray) -> np.ndarray:
@@ -844,11 +933,11 @@ class AcinarImage:
         if len(hole_sizes) > 1 and flag == "None":
             flag = "hole"
 
-        # QC plot
+        # QC plot: protein in red (if present), membrane stays green, nuclear blue
         self._save_qc("acinus_shape",
                       [(self._mid_z(acinus_mask), "Acinus mask")],
-                      title_extra=f"vol={vol:.0f} ÂµmÂ³, round={roundness:.2f}, thresh={threshold_method}, solidity={solidity:.2f}",
-                      red_channel=self.membrane_channel)
+                      title_extra=f"vol={vol:.0f} \u00b5m\u00b3, round={roundness:.2f}, thresh={threshold_method}, solidity={solidity:.2f}",
+                      red_channel=self.protein_channel)
 
         if self.return_volumes:
             self.volumes["acinus_mask"] = acinus_mask
@@ -876,31 +965,10 @@ class AcinarImage:
         rescaled_mem = rescaled_mem * acinus_mask
 
         # --- Segment nuclei via watershed ---
-        cleaned_nuc = gaussian(rescaled_nuc, 1)
-        thresh = threshold_otsu(cleaned_nuc)
-        cleaned_nuc = cleaned_nuc > thresh
-        cleaned_nuc = remove_small_holes(cleaned_nuc, area_threshold=1000)
+        seg_nuc = segment_nuclei(rescaled_nuc, px, smooth_sigma=1.0)
 
-        distances = ndi.distance_transform_edt(erosion(cleaned_nuc, ball(3)))
-        coords = peak_local_max(distances, min_distance=max(1, int(4 / px)))
-        markers = np.zeros(cleaned_nuc.shape, dtype=np.uint32)
-        idx = tuple(np.round(coords).astype(int).T)
-        markers[idx] = np.arange(len(coords)) + 1
-        markers = dilation(markers, ball(2))
-        seg_nuc = watershed(-distances, markers, mask=cleaned_nuc)
-        seg_nuc = clear_border(seg_nuc)
-
-        # Filter small nuclei
-        props = regionprops_table(seg_nuc, properties=("label", "area"))
-        vol_thresh = (4 / 3) * np.pi * (2 / px) ** 3
-        keep = props["area"] >= vol_thresh
-        seg_nuc = util.map_array(seg_nuc, props["label"], props["label"] * keep)
-
-        # --- Segment membranes via watershed seeded by nuclei ---
-        cleaned_mem = gaussian(rescaled_mem, sigma=1)
-        thresh_m = threshold_otsu(cleaned_mem)
-        cleaned_mem = cleaned_mem > thresh_m
-        _, seg_mem_exp = _watershed_from_seeds(cleaned_mem, seg_nuc, acinus_mask)
+        # --- Segment cells via membrane watershed seeded by nuclei ---
+        seg_mem_exp = segment_cells(rescaled_mem, seg_nuc, acinus_mask, smooth_sigma=1.0)
 
         # --- Match nuclei to cells and compute properties ---
         matching = _match_nuclei_to_cells(seg_nuc, seg_mem_exp, px)
@@ -910,11 +978,11 @@ class AcinarImage:
         if self.spacing == [1, 1, 1]:
             matching["flag"] = "wrong_metadata"
 
-        # QC plot
+        # QC plot: membrane stays green (B=nuc), red only if a protein channel is set
         self._save_qc("cell_nuclear_shape", [
             (self._mid_z(seg_nuc), "Nuclei labels"),
             (self._mid_z(seg_mem_exp), "Cell labels"),
-        ], red_channel=self.membrane_channel)
+        ], red_channel=self.protein_channel)
 
         if self.return_volumes:
             self.volumes["acinus_mask"] = acinus_mask
@@ -1312,30 +1380,9 @@ class AcinarImage:
         mito_binary = remove_small_objects(mito_binary, min_size=mito_min_object_size)
         mito_labelled = label(mito_binary)
 
-        # --- Segment nuclei via watershed (same as cell_nuclear_shape) ---
-        cleaned_nuc = gaussian(rescaled_nuc, 1)
-        thresh = threshold_otsu(cleaned_nuc)
-        cleaned_nuc = cleaned_nuc > thresh
-        cleaned_nuc = remove_small_holes(cleaned_nuc, area_threshold=1000)
-
-        distances_nuc = ndi.distance_transform_edt(erosion(cleaned_nuc, ball(3)))
-        coords = peak_local_max(distances_nuc, min_distance=max(1, int(4 / px)))
-        markers = np.zeros(cleaned_nuc.shape, dtype=np.uint32)
-        idx = tuple(np.round(coords).astype(int).T)
-        markers[idx] = np.arange(len(coords)) + 1
-        markers = dilation(markers, ball(2))
-        seg_nuc = watershed(-distances_nuc, markers, mask=cleaned_nuc)
-        seg_nuc = clear_border(seg_nuc)
-
-        props = regionprops_table(seg_nuc, properties=("label", "area"))
-        vol_thresh = (4 / 3) * np.pi * (2 / px) ** 3
-        keep = props["area"] >= vol_thresh
-        seg_nuc = util.map_array(seg_nuc, props["label"], props["label"] * keep)
-        # --- Segment cells via membrane watershed seeded by nuclei ---
-        cleaned_mem = gaussian(rescaled_mem, sigma=1)
-        thresh_m = threshold_otsu(cleaned_mem)
-        cleaned_mem = cleaned_mem > thresh_m
-        _, seg_mem_exp = _watershed_from_seeds(cleaned_mem, seg_nuc, acinus_mask)
+        # --- Segment nuclei and cells via watershed ---
+        seg_nuc = segment_nuclei(rescaled_nuc, px, smooth_sigma=1.0)
+        seg_mem_exp = segment_cells(rescaled_mem, seg_nuc, acinus_mask, smooth_sigma=1.0)
 
         # --- Match nuclei to cells ---
         matching = _match_nuclei_to_cells(seg_nuc, seg_mem_exp, px)
@@ -1609,25 +1656,7 @@ class AcinarImage:
         rescaled_nuc = self._load_mask_rescaled(self.nuclear_mask_path) * acinus_mask
 
         # --- Segment nuclei via watershed (same approach as cell_nuclear_shape) ---
-        cleaned_nuc = gaussian(rescaled_nuc, 0.8)
-        thresh = threshold_otsu(cleaned_nuc)
-        cleaned_nuc = cleaned_nuc > thresh
-        cleaned_nuc = remove_small_holes(cleaned_nuc, area_threshold=1000)
-
-        distances = ndi.distance_transform_edt(erosion(cleaned_nuc, ball(3)))
-        coords = peak_local_max(distances, min_distance=max(1, int(4 / px)))
-        markers = np.zeros(cleaned_nuc.shape, dtype=np.uint32)
-        idx = tuple(np.round(coords).astype(int).T)
-        markers[idx] = np.arange(len(coords)) + 1
-        markers = dilation(markers, ball(2))
-        seg_nuc = watershed(-distances, markers, mask=cleaned_nuc)
-        seg_nuc = clear_border(seg_nuc)
-
-        # Filter small nuclei
-        props = regionprops_table(seg_nuc, properties=("label", "area"))
-        vol_thresh = (4 / 3) * np.pi * (2 / px) ** 3
-        keep = props["area"] >= vol_thresh
-        seg_nuc = util.map_array(seg_nuc, props["label"], props["label"] * keep)
+        seg_nuc = segment_nuclei(rescaled_nuc, px, smooth_sigma=0.8)
 
         acinus_regions = regionprops(acinus_mask)
         acinus_vol = acinus_regions[0].area * px ** 3 if acinus_regions else np.nan
@@ -1711,17 +1740,16 @@ class AcinarImage:
         rescaled_nuc = self._load_mask_rescaled(self.nuclear_mask_path) * acinus_bool
         rescaled_mem = self._load_mask_rescaled(self.membrane_mask_path) * acinus_bool
 
-        # Membrane: light smoothing to bridge gaps, then threshold
-        cleaned_mem = gaussian(rescaled_mem, sigma=0.5)
-        cleaned_mem = cleaned_mem > threshold_otsu(cleaned_mem)
+        # Segment nuclei and cell territories (shared with cell_nuclear_shape)
+        seg_nuc = segment_nuclei(rescaled_nuc, px, smooth_sigma=1.0)
+        seg_cells = segment_cells(rescaled_mem, seg_nuc, acinus_mask, smooth_sigma=1.0)
 
-        # Nuclei: threshold, clean, and exclude any membrane overlap
-        cleaned_nuc = rescaled_nuc > threshold_otsu(rescaled_nuc)
-        cleaned_nuc = remove_small_objects(cleaned_nuc, min_size=60)
-        cleaned_nuc = remove_small_holes(cleaned_nuc, area_threshold=60)
-        cleaned_nuc = cleaned_nuc & ~cleaned_mem
+        # Membrane compartment = dilated cell boundaries
+        boundaries = find_boundaries(seg_cells, mode="thick")
+        cleaned_mem = dilation(boundaries, ball(1)) & acinus_bool
 
-        # Cytoplasm = acinus - membrane - nucleus
+        # Nucleus (exclude membrane overlap) and cytoplasm = acinus - membrane - nucleus
+        cleaned_nuc = (seg_nuc > 0) & ~cleaned_mem
         cleaned_cyto = acinus_bool & ~cleaned_mem & ~cleaned_nuc
 
         poi_membrane = float(protein_rescaled[cleaned_mem].sum())
@@ -1828,6 +1856,7 @@ def batch_analyse(
     edu_mask_dir: Optional[str] = None,
     mito_mask_dir: Optional[str] = None,
     qc_dir: Optional[str] = None,
+    qc_format: str = "png",
     progress_callback=None,
     **kwargs,
 ) -> Dict[str, pd.DataFrame]:
@@ -1877,6 +1906,7 @@ def batch_analyse(
             **ctor_kwargs,
         )
         img.qc_dir = qc_dir
+        img.qc_format = qc_format
         return img.run(analyses, **analysis_kwargs)
 
     print(f"Found {len(image_paths)} images. Running analyses: {analyses}")

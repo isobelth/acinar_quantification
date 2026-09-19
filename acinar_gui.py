@@ -113,7 +113,7 @@ _CHANNEL_LABELS = {
     "c3_channel": "C3 Channel",
     "edu_channel": "EdU Channel",
     "proximity_protein_channel": "Proximity Protein Channel",
-    "membrane_channel": "Membrane Channel",
+    "membrane_channel": "Cell Membrane Channel",
 }
 
 
@@ -131,7 +131,7 @@ class AcinarAnalysisGUI:
 
     def __init__(self):
         self._results: Optional[Dict[str, pd.DataFrame]] = None
-        self._config: Optional[dict] = None  # validated settings, filled on Run click
+        self._config: Optional[dict] = None  # validated settings, filled 
         self._closed = False  # True once the window is closed (via Run or the X button)
 
         # ---- Build magicgui panels ----
@@ -154,7 +154,7 @@ class AcinarAnalysisGUI:
         self.channel_panel = magicgui(
             self._channel_stub,
             nuclear_channel={"label": "Nuclear Channel", "value": 0, "min": 0, "max": 20},
-            membrane_channel={"label": "Membrane Ch (-1=none)", "value": 2, "min": -1, "max": 20},
+            membrane_channel={"label": "Cell Membrane Ch (-1=none)", "value": 2, "min": -1, "max": 20},
             protein_channel={"label": "Protein Ch (-1=none)", "value": -1, "min": -1, "max": 20},
             c3_channel={"label": "C3 Ch (-1=none)", "value": -1, "min": -1, "max": 20},
             edu_channel={"label": "EdU Ch (-1=none)", "value": -1, "min": -1, "max": 20},
@@ -177,6 +177,7 @@ class AcinarAnalysisGUI:
             nuclear_protein_localisation={"label": "Nuclear Protein Localisation", "value": False},
             protein_subcellular_localisation={"label": "Protein Subcellular Localisation", "value": False},
             save_qc_plots={"label": "Save QC Plots", "value": True},
+            qc_format={"label": "QC Plot Format", "choices": ["png", "pdf", "svg"], "value": "png"},
             call_button=False,
         )
 
@@ -263,6 +264,7 @@ class AcinarAnalysisGUI:
         nuclear_protein_localisation: bool = False,
         protein_subcellular_localisation: bool = False,
         save_qc_plots: bool = True,
+        qc_format: str = "png",
     ):
         return None
 
@@ -422,6 +424,7 @@ class AcinarAnalysisGUI:
             "mito_channel": channels.get("mito_channel"),
             "proximity_protein_channel": channels.get("proximity_protein_channel"),
             "qc_dir": qc_dir,
+            "qc_format": self.analysis_panel.qc_format.value,
         }
 
         self._log("=" * 50)
