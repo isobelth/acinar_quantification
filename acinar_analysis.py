@@ -457,7 +457,7 @@ def _watershed_from_seeds(
     markers = dilation(markers, ball(2))
     seg = watershed(-distances, markers, mask=util.invert(membrane_mask))
     seg = clear_border(seg)
-    expanded = expand_labels(seg, distance=12) * acinus_mask
+    expanded = expand_labels(seg, distance=5) * acinus_mask
     return seg, expanded
 
 
@@ -513,6 +513,7 @@ def segment_cells(
     seed_labels: np.ndarray,
     acinus_mask: np.ndarray,
     smooth_sigma: float = 1.0,
+    close_radius: int = 2,
 ) -> np.ndarray:
     """Segment cell territories from a membrane mask, seeded by nuclei.
 
@@ -520,6 +521,9 @@ def segment_cells(
     """
     cleaned = gaussian(membrane_mask, sigma=smooth_sigma)
     cleaned = cleaned > threshold_otsu(cleaned)
+    # Close each z-slice in 2D to bridge gaps in the membrane network so cells
+    # stay properly bounded during watershed.
+    cleaned = close_slicewise(cleaned, radius=close_radius)
     _, expanded = _watershed_from_seeds(cleaned, seed_labels, acinus_mask)
     return expanded
 

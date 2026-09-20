@@ -5,14 +5,14 @@
 
 ## Overview
 
-GUI to aid quantification of 3D acinar images in the Gilmore lab. Possible quantification includes:
+GUI to aid quantification of 3D acinar images in the Gilmore lab. All analysis is on the full 3D stack, not 2D projections. Possible quantification includes:
 
 1. Acinar shape/size
 2. Cell/nucleus shape/size
 3. Protein polarisation across the acinus (used in our case to understand the (mis)localisation of basement membrane proteins)
 4. Apoptosis (C3* staining)
 5. Proliferation (EdU staining)
-6. Mitochondria analysis (amount/location within cells
+6. Mitochondria analysis (amount/location within cells)
 7. Protein colocalisation (with nuclear and membrane markers)
 8. Protein subcellular localisation (within binarised membrane/nuclear compartments)
 9. Nuclear protein localisation (within individual nuclei, and the position of those nuclei across an acinus)
@@ -170,6 +170,8 @@ We used this to quantify the (mis-)localisation of proteins away from the acinus
 3. Computes a distance map normalised 0–1 from the acinus boundary.
 4. Records each C3 object's volume and normalised distance from the acinus edge.
 
+![README_images/c3_analysis.png](README_images/c3_analysis.png)
+
 **Output columns:**
 
 | Column                                      | Description                                       |
@@ -184,40 +186,7 @@ We used this to quantify the (mis-)localisation of proteins away from the acinus
 
 ---
 
-### 5. Protein Proximity
-
-|                             |                                                                   |
-| --------------------------- | ----------------------------------------------------------------- |
-| **What it measures**  | Intensity of a chosen protein near dying (C3+) vs non-dying cells |
-| **GUI checkbox**      | Protein Proximity                                                 |
-| **Required folders**  | C3 Mask Folder, Nuclear Mask Folder                               |
-| **Required channels** | C3 Channel (≥ 0), Proximity Protein Channel (≥ 0)               |
-
-**How it works:**
-
-1. Classifies cells as **dying** (C3 mask objects) or **non-dying** (nuclear mask minus dilated C3 mask).
-2. Watershed-segments both populations within the acinus.
-3. Builds estimated cell territories (expand labels × 20), then expands each territory by a search radius (default 5 µm).
-4. Measures the proximity-protein intensity both inside each cell and in its surrounding neighbourhood.
-
-**Output columns:**
-
-| Column                                    | Description                           |
-| ----------------------------------------- | ------------------------------------- |
-| `dying`                                 | `Y` (C3+) or `N`                  |
-| `proximity_intensity_in_cell`           | Total protein signal within the cell  |
-| `proximity_intensity_around_cell`       | Signal in neighbourhood minus in-cell |
-| `proximity_mean_intensity_in_cell`      | Mean intensity within cell            |
-| `proximity_mean_intensity_neighborhood` | Mean intensity in full neighbourhood  |
-| `estimated_cell_territory_volume_um3`   | Cell territory volume                 |
-| `proximity_neighborhood_volume_um3`     | Neighbourhood volume                  |
-| `number_dying`, `number_not_dying`    | Cell counts per acinus                |
-
-**QC plot:** Acinus mask + colour-coded dying cells + colour-coded non-dying cells.
-
----
-
-### 6. Proliferation (EdU)
+### 5. Proliferation (EdU)
 
 |                             |                                                                                  |
 | --------------------------- | -------------------------------------------------------------------------------- |
@@ -245,8 +214,9 @@ We used this to quantify the (mis-)localisation of proteins away from the acinus
 **QC plot:** Acinus mask + colour-coded dividing cells + colour-coded non-dividing cells.
 
 ---
+---
 
-### 7. Mitochondria
+### 6. Mitochondria Analysis
 
 |                             |                                                                                                                             |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -277,37 +247,62 @@ We used this to quantify the (mis-)localisation of proteins away from the acinus
 
 **QC plot:** Acinus mask + cell labels + mito labels.
 
+
+
+##################### MISSING 7
+
+
+
+
+
+
 ---
 
-### 8. Membrane Upregulation
+### 8. Protein Subcellular Localisation
 
-|                             |                                                                                               |
-| --------------------------- | --------------------------------------------------------------------------------------------- |
-| **What it measures**  | Whether membrane-channel signal is enriched at the acinus periphery compared to deeper inside |
-| **GUI checkbox**      | Membrane Upregulation                                                                         |
-| **Required folders**  | None                                                                                          |
-| **Required channels** | Membrane Channel (≥ 0)                                                                       |
+|                             |                                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------------- |
+| **What it measures**  | Fraction of total protein signal in the membrane, nucleus, and cytoplasm compartments |
+| **GUI checkbox**      | Protein Subcellular Localisation                                                      |
+| **Required folders**  | Nuclear Mask Folder, Membrane Mask Folder                                             |
+| **Required channels** | Protein Channel (≥ 0)                                                                |
 
 **How it works:**
 
-1. Computes a distance transform from the acinus boundary inward.
-2. Defines an **edge shell** (0–3 µm from boundary) and an **inner shell** (8–11 µm from boundary; i.e. 3 µm shell + 5 µm gap + 3 µm shell).
-3. Measures the **median** membrane-channel intensity in each shell.
-4. Computes the ratio (edge median / inner median). Values > 1 indicate peripheral enrichment.
+1. Rescales the protein channel and both masks to acinus resolution and restricts them to the acinus.
+2. Builds **boolean compartment masks**: membrane (smoothed + Otsu), nucleus (Otsu + cleaned, with membrane overlap removed), and cytoplasm (acinus − membrane − nucleus).
+3. Sums the protein signal in each compartment and reports each as a fraction of the total.
 
-Shell width (3 µm) and offset (5 µm) are fixed and not user-configurable.
+Unlike *Nuclear Protein Localisation*, this reports one row per acinus (compartment fractions), not per nucleus.
+
+![README_images/compartment_analysis.png](README_images/compartment_analysis.png)
 
 **Output columns:**
 
-| Column                                                | Description                                  |
-| ----------------------------------------------------- | -------------------------------------------- |
-| `acinus_volume_um3`, `acinus_roundness`           | Acinus-level metrics                         |
-| `membrane_edge_shell_median`                        | Median membrane intensity in the outer shell |
-| `membrane_inner_shell_median`                       | Median membrane intensity in the inner shell |
-| `membrane_edge_to_inner_ratio`                      | Edge / inner (NaN if inner = 0)              |
-| `edge_shell_volume_um3`, `inner_shell_volume_um3` | Shell volumes                                |
+| Column                | Description                                       |
+| --------------------- | ------------------------------------------------- |
+| `nuclear_fraction`  | Fraction of protein signal in nuclei              |
+| `membrane_fraction` | Fraction of protein signal in the membrane        |
+| `cyto_fraction`     | Fraction of protein signal in the cytoplasm       |
+| `total`             | Sum of the three fractions (≈ 1.0; sanity check) |
+| `flag`              | Acinus segmentation flag                          |
 
-**QC plot:** Acinus mask + edge shell region + inner shell region overlaid on raw image (red = membrane channel). Title shows the ratio value.
+**QC plot:** Mid-Z nucleus, cytoplasm, and membrane masks overlaid on the raw image (red = protein channel).
+
+---
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ---
 
@@ -343,38 +338,7 @@ Shell width (3 µm) and offset (5 µm) are fixed and not user-configurable.
 
 **QC plot:** Mid-Z nuclear labels overlaid on the raw image (red = protein channel).
 
----
 
-### 10. Protein Subcellular Localisation
-
-|                             |                                                                                       |
-| --------------------------- | ------------------------------------------------------------------------------------- |
-| **What it measures**  | Fraction of total protein signal in the membrane, nucleus, and cytoplasm compartments |
-| **GUI checkbox**      | Protein Subcellular Localisation                                                      |
-| **Required folders**  | Nuclear Mask Folder, Membrane Mask Folder                                             |
-| **Required channels** | Protein Channel (≥ 0)                                                                |
-
-**How it works:**
-
-1. Rescales the protein channel and both masks to acinus resolution and restricts them to the acinus.
-2. Builds **boolean compartment masks**: membrane (smoothed + Otsu), nucleus (Otsu + cleaned, with membrane overlap removed), and cytoplasm (acinus − membrane − nucleus).
-3. Sums the protein signal in each compartment and reports each as a fraction of the total.
-
-Unlike *Nuclear Protein Localisation*, this reports one row per acinus (compartment fractions), not per nucleus.
-
-**Output columns:**
-
-| Column                | Description                                       |
-| --------------------- | ------------------------------------------------- |
-| `nuclear_fraction`  | Fraction of protein signal in nuclei              |
-| `membrane_fraction` | Fraction of protein signal in the membrane        |
-| `cyto_fraction`     | Fraction of protein signal in the cytoplasm       |
-| `total`             | Sum of the three fractions (≈ 1.0; sanity check) |
-| `flag`              | Acinus segmentation flag                          |
-
-**QC plot:** Mid-Z nucleus, cytoplasm, and membrane masks overlaid on the raw image (red = protein channel).
-
----
 
 ## Requirements Summary Table
 
@@ -393,35 +357,75 @@ Unlike *Nuclear Protein Localisation*, this reports one row per acinus (compartm
 
 ---
 
-## Imaging Record (Optional)
 
-An `imaging_record.yml` file can be provided to control how experimental metadata (well, day, cell type, condition, treatment) is extracted from filenames. If no file is provided, built-in rules are used. The YAML uses simple substring-matching rules evaluated top-to-bottom per field. See the included [imaging_record.yml](imaging_record.yml) for the format and default rules.
 
----
-
-## Output
-
-- One CSV per analysis type is saved in the output directory (e.g. `acinar_results_acinus_shape.csv`).
-- Every output row includes parsed filename metadata: `filename`, `well`, `day`, `cell_type`, `condition`, `treatment`, `image_type`, `flag`.
-- If **Save QC Plots** is enabled, overlay PNGs are saved to `output_dir/qc_plots/`.
-
----
 
 
 
 ---
 
-## Requirements
+### 10. Protein Proximity
 
-- Python 3.8+
-- numpy, pandas, scikit-image, scipy, tifffile, joblib, tqdm, magicgui, qtpy, matplotlib, pyyaml
-- FIJI/ImageJ with [Labkit](https://imagej.net/plugins/labkit/) for mask generation
+|                             |                                                                   |
+| --------------------------- | ----------------------------------------------------------------- |
+| **What it measures**  | Intensity of a chosen protein near dying (C3+) vs non-dying cells |
+| **GUI checkbox**      | Protein Proximity                                                 |
+| **Required folders**  | C3 Mask Folder, Nuclear Mask Folder                               |
+| **Required channels** | C3 Channel (≥ 0), Proximity Protein Channel (≥ 0)               |
+
+**How it works:**
+
+1. Classifies cells as **dying** (C3 mask objects) or **non-dying** (nuclear mask minus dilated C3 mask).
+2. Watershed-segments both populations within the acinus.
+3. Builds estimated cell territories (expand labels × 20), then expands each territory by a search radius (default 5 µm).
+4. Measures the proximity-protein intensity both inside each cell and in its surrounding neighbourhood.
+
+**Output columns:**
+
+| Column                                    | Description                           |
+| ----------------------------------------- | ------------------------------------- |
+| `dying`                                 | `Y` (C3+) or `N`                  |
+| `proximity_intensity_in_cell`           | Total protein signal within the cell  |
+| `proximity_intensity_around_cell`       | Signal in neighbourhood minus in-cell |
+| `proximity_mean_intensity_in_cell`      | Mean intensity within cell            |
+| `proximity_mean_intensity_neighborhood` | Mean intensity in full neighbourhood  |
+| `estimated_cell_territory_volume_um3`   | Cell territory volume                 |
+| `proximity_neighborhood_volume_um3`     | Neighbourhood volume                  |
+| `number_dying`, `number_not_dying`    | Cell counts per acinus                |
+
+**QC plot:** Acinus mask + colour-coded dying cells + colour-coded non-dying cells.
+
+
 
 ---
 
-## Troubleshooting
+### 11. Membrane Upregulation
 
-- Mask folders must contain the **same number** of files as the image folder (matched alphabetically).
-- Channel indices are **zero-based** (e.g. nuclear channel = 0).
-- Set unused channels to **-1** in the GUI.
-- If acinus segmentation fails or looks wrong, check the QC plots — a `multiple_acini_split` flag means merged acini were detected and re-segmented.
+|                             |                                                                                               |
+| --------------------------- | --------------------------------------------------------------------------------------------- |
+| **What it measures**  | Whether membrane-channel signal is enriched at the acinus periphery compared to deeper inside |
+| **GUI checkbox**      | Membrane Upregulation                                                                         |
+| **Required folders**  | None                                                                                          |
+| **Required channels** | Membrane Channel (≥ 0)                                                                       |
+
+**How it works:**
+
+1. Computes a distance transform from the acinus boundary inward.
+2. Defines an **edge shell** (currently 0–3 µm from boundary) and an **inner shell** (currently 8–11 µm from boundary; i.e. 3 µm shell + 5 µm gap + 3 µm shell).
+3. Measures the **median** membrane-channel intensity in each shell.
+4. Computes the ratio (edge median / inner median). Values > 1 indicate peripheral enrichment.
+
+![README_images/membrane_upregulation.png](README_images/membrane_upregulation.png)
+
+
+**Output columns:**
+
+| Column                                                | Description                                  |
+| ----------------------------------------------------- | -------------------------------------------- |
+| `acinus_volume_um3`, `acinus_roundness`           | Acinus-level metrics                         |
+| `membrane_edge_shell_median`                        | Median membrane intensity in the outer shell |
+| `membrane_inner_shell_median`                       | Median membrane intensity in the inner shell |
+| `membrane_edge_to_inner_ratio`                      | Edge / inner (NaN if inner = 0)              |
+| `edge_shell_volume_um3`, `inner_shell_volume_um3` | Shell volumes                                |
+
+**QC plot:** Acinus mask + edge shell region + inner shell region overlaid on raw image (red = membrane channel). Title shows the ratio value.
