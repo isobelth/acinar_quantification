@@ -96,6 +96,11 @@ _REQUIREMENTS: Dict[str, dict] = {
         "channels": ["protein_channel"],
         "label": "Protein Subcellular Localisation",
     },
+    "protein_colocalisation": {
+        "folders": [],
+        "channels": [],
+        "label": "Protein Colocalisation",
+    },
 }
 
 # Human-readable labels for folders and channels, used in validation messages
@@ -176,6 +181,7 @@ class AcinarAnalysisGUI:
             membrane_upregulation={"label": "Membrane Upregulation", "value": False},
             nuclear_protein_localisation={"label": "Nuclear Protein Localisation", "value": False},
             protein_subcellular_localisation={"label": "Protein Subcellular Localisation", "value": False},
+            protein_colocalisation={"label": "Protein Colocalisation", "value": False},
             save_qc_plots={"label": "Save QC Plots", "value": True},
             qc_format={"label": "QC Plot Format", "choices": ["png", "pdf", "svg"], "value": "png"},
             call_button=False,
@@ -263,6 +269,7 @@ class AcinarAnalysisGUI:
         membrane_upregulation: bool = False,
         nuclear_protein_localisation: bool = False,
         protein_subcellular_localisation: bool = False,
+        protein_colocalisation: bool = False,
         save_qc_plots: bool = True,
         qc_format: str = "png",
     ):
@@ -465,7 +472,7 @@ class AcinarAnalysisGUI:
         self._results = batch_analyse(**self._config)
 
         print("\n" + "=" * 60)
-        print("COMPLETE!")
+        print("Finished!")
         for name, df in self._results.items():
             n = len(df) if df is not None else 0
             print(f"  {name}: {n} row(s)")

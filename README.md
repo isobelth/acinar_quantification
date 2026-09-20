@@ -2,10 +2,9 @@
 
 ![README_images/microscope_images.png](README_images/microscope_images.png)
 
-
 ## Overview
 
-GUI to aid quantification of 3D acinar images in the Gilmore lab. All analysis is on the full 3D stack, not 2D projections. Possible quantification includes:
+GUI to aid quantification of 3D acinar images in the Gilmore lab. All analysis is on full 3D volumes, not 2D projections. Possible quantification includes:
 
 1. Acinar shape/size
 2. Cell/nucleus shape/size
@@ -22,6 +21,7 @@ More niche workflows are also available
 10. Protein proximity (to dying and non dying cells)
 11. Actin upregulation (at the acinus exterior vs an interior shell)
 
+**Note:** The majority of our analysis was performed on acini embedded in their native microenvironment. Embedding gels differ in both their mechanical and optical properties, which can substantially affect measured fluorescence intensities. Furthermore, variability in the depth of acini within the gels can lead to significant disparities in the observed fluroescence intenisty. We therefore focus on protein localisation within an acinus, rather than quantifying absolute fluorescence intensities in such variable environments.
 
 <p align="center">
   <img src="README_images/segmentation1.gif" width="17.7%" />
@@ -32,10 +32,7 @@ More niche workflows are also available
 Launch the GUI using GUI_launcher.ipynb.
 
 ## Creating Masks
-- Some analyses require pre-segmentation of nuclei/membrane..... This can be achieved with Cellpose/SAM, but we continue to recommend Labkit (FIJI plugin).
-
-Signal attenuation in deeper z-slices is a major challenge in 3D acinar imaging. The recommended workflow:
-
+- Some analyses require pre-segmentation of nuclei/membrane (see requirements table at the end of this README). We use the Labkit (FIJI plugin) workflow setout below, but the same outcome can likely be achieved using newer tools (e.g. Cellpose/SAM). To offset the signal attenuation in deeper z-slices, we use the following workdlow:
 1. Split z-stacks into top (bright) and bottom (dim) halves.
 2. Train separate [Labkit](https://imagej.net/plugins/labkit/) classifiers in FIJI/ImageJ for each half.
 3. Segment, then concatenate top + bottom masks into full-stack masks.
@@ -198,7 +195,7 @@ We used this to quantify the (mis-)localisation of proteins away from the acinus
 **How it works:**
 
 1. **Dividing cells** = EdU mask objects, watershed-segmented (4 µm separation, 2 µm min radius).
-2. **Non-dividing cells** = nuclear mask minus dilated EdU mask, watershed-segmented.
+2. **Non-dividing cells** = nuclei that are DAPI positive but EdU negative (nuclear mask minus dilated EdU mask, watershed-segmented).
 3. Computes normalised distance of each cell from the acinus boundary.
 
 **Output columns:**
@@ -213,7 +210,6 @@ We used this to quantify the (mis-)localisation of proteins away from the acinus
 
 **QC plot:** Acinus mask + colour-coded dividing cells + colour-coded non-dividing cells.
 
----
 ---
 
 ### 6. Mitochondria Analysis
@@ -249,12 +245,36 @@ We used this to quantify the (mis-)localisation of proteins away from the acinus
 
 
 
-##################### MISSING 7
+---
+
+### 7. Protein Colocalisation
+
+|                             |                                                                            |
+| --------------------------- | -------------------------------------------------------------------------- |
+| **What it measures**  | Pairwise Pearson correlation between channel intensities within the acinus |
+| **GUI checkbox**      | Protein Colocalisation                                                     |
+| **Required folders**  | Image folder only                                                          |
+| **Required channels** | None (correlates every channel present)                                    |
+
+**How it works:**
+
+1. Uses the shared acinus segmentation to isolate the acinus.
+2. Rescales each channel to acinus resolution and applies a light 3×3×3 uniform (mean) filter to suppress single-voxel noise.
+3. Keeps only the voxels **inside** the acinus mask, so background voxels don't inflate the correlation.
+4. Computes the Pearson correlation coefficient between every pair of channels across those in-acinus voxels.
+
+Each channel is labelled by its configured role (`nuclear`, `membrane`, `protein`, `c3`, `edu`, `mito`) where set, otherwise `channelN`. A correlation near **+1** means the two markers co-localise (bright in the same voxels), near **0** means no linear relationship, and near **−1** means they are mutually exclusive.
 
 
+**Output columns:** the correlation matrix is returned in long form, one row per channel.
 
+| Column                 | Description                                                                |
+| ---------------------- | ------------------------------------------------------------------------- |
+| `channel`            | The channel this row refers to (role name or `channelN`)                  |
+| one column per channel | Pearson correlation of `channel` against that channel (1.0 on the diagonal) |
+| `flag`               | Acinus segmentation flag                                                   |
 
-
+**QC plot:** Mid-Z slice showing the acinus mask boundary overlaid on the raw image (red = protein channel).
 
 ---
 
@@ -270,8 +290,9 @@ We used this to quantify the (mis-)localisation of proteins away from the acinus
 **How it works:**
 
 1. Rescales the protein channel and both masks to acinus resolution and restricts them to the acinus.
-2. Builds **boolean compartment masks**: membrane (smoothed + Otsu), nucleus (Otsu + cleaned, with membrane overlap removed), and cytoplasm (acinus − membrane − nucleus).
-3. Sums the protein signal in each compartment and reports each as a fraction of the total.
+2. Segments individual **nuclei** (`segment_nuclei`) and **cell territories** (`segment_cells`, a membrane-seeded watershed) — the same segmentation used by *Cell & Nuclear Shape*.
+3. Builds boolean compartment masks: **membrane** = the cell–cell boundaries dilated by one voxel, **nucleus** = the segmented nuclei with membrane overlap removed, and **cytoplasm** = acinus − membrane − nucleus.
+4. Sums the protein signal in each compartment and reports each as a fraction of the total.
 
 Unlike *Nuclear Protein Localisation*, this reports one row per acinus (compartment fractions), not per nucleus.
 
@@ -290,18 +311,6 @@ Unlike *Nuclear Protein Localisation*, this reports one row per acinus (compartm
 **QC plot:** Mid-Z nucleus, cytoplasm, and membrane masks overlaid on the raw image (red = protein channel).
 
 ---
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 ---
@@ -340,29 +349,7 @@ Unlike *Nuclear Protein Localisation*, this reports one row per acinus (compartm
 
 
 
-## Requirements Summary Table
 
-| Analysis                         | Mask Folders Needed     | Channels Needed (≥ 0) |
-| -------------------------------- | ----------------------- | ---------------------- |
-| Acinus Shape                     | —                      | —                     |
-| Cell & Nuclear Shape             | Nuclear, Membrane       | —                     |
-| Protein Polarisation             | —                      | Protein                |
-| Apoptosis (C3)                   | C3, Nuclear             | C3                     |
-| Protein Proximity                | C3, Nuclear             | C3, Proximity Protein  |
-| Proliferation (EdU)              | EdU, Nuclear            | EdU                    |
-| Mitochondria                     | Nuclear, Membrane, Mito | —                     |
-| Membrane Upregulation            | —                      | Membrane               |
-| Nuclear Protein Localisation     | Nuclear                 | Protein                |
-| Protein Subcellular Localisation | Nuclear, Membrane       | Protein                |
-
----
-
-
-
-
-
-
----
 
 ### 10. Protein Proximity
 
@@ -429,3 +416,22 @@ Unlike *Nuclear Protein Localisation*, this reports one row per acinus (compartm
 | `edge_shell_volume_um3`, `inner_shell_volume_um3` | Shell volumes                                |
 
 **QC plot:** Acinus mask + edge shell region + inner shell region overlaid on raw image (red = membrane channel). Title shows the ratio value.
+
+
+## Requirements Summary Table
+
+| Analysis                         | Mask Folders Needed     | Channels Needed (≥ 0) |
+| -------------------------------- | ----------------------- | ---------------------- |
+| Acinus Shape                     | —                      | —                     |
+| Cell & Nuclear Shape             | Nuclear, Membrane       | —                     |
+| Protein Polarisation             | —                      | Protein                |
+| Apoptosis (C3)                   | C3, Nuclear             | C3                     |
+| Protein Proximity                | C3, Nuclear             | C3, Proximity Protein  |
+| Proliferation (EdU)              | EdU, Nuclear            | EdU                    |
+| Mitochondria                     | Nuclear, Membrane, Mito | —                     |
+| Membrane Upregulation            | —                      | Membrane               |
+| Nuclear Protein Localisation     | Nuclear                 | Protein                |
+| Protein Subcellular Localisation | Nuclear, Membrane       | Protein                |
+| Protein Colocalisation           | —                      | —                     |
+
+---
