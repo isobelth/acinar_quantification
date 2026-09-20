@@ -23,13 +23,16 @@ More niche workflows are also available
 
 **Note:** The majority of our analysis was performed on acini embedded in their native microenvironment. Embedding gels differ in both their mechanical and optical properties, which can substantially affect measured fluorescence intensities. Furthermore, variability in the depth of acini within the gels can lead to significant disparities in the observed fluroescence intenisty. We therefore focus on protein localisation within an acinus, rather than quantifying absolute fluorescence intensities in such variable environments.
 
+Launch the GUI using GUI_launcher.ipynb. An interactive GUI makes analysis straightforward.
+
+![README_images/gui.png](README_images/gui.png)
+
 <p align="center">
   <img src="README_images/segmentation1.gif" width="17.7%" />
   <img src="README_images/acinar_segmentation.gif" width="19%" />
   <img src="README_images/cell_segmentation.gif" width="19%" />
 </p>
 
-Launch the GUI using GUI_launcher.ipynb.
 
 ## Creating Masks
 - Some analyses require pre-segmentation of nuclei/membrane (see requirements table at the end of this README). We use the Labkit (FIJI plugin) workflow setout below, but the same outcome can likely be achieved using newer tools (e.g. Cellpose/SAM). To offset the signal attenuation in deeper z-slices, we use the following workdlow:
